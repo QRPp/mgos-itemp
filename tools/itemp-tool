@@ -1,0 +1,325 @@
+#!/usr/bin/ruby
+# {{{1 Wav
+class Wav
+  HdrSize = 44
+
+  attr_accessor :hz, :nCh, :res
+
+  def initialize io
+    @io = io
+    parseHdr(readHdr)
+  end
+
+  def each
+    @io.sysseek HdrSize
+    align = @nCh * @res / 8
+    fmt = @sFmt * @nCh
+    loop {
+      baseOfs = (@io.tell - HdrSize) / align
+      begin
+        chunk = @io.sysread align * 1024
+      rescue EOFError
+        break
+      end
+      (chunk.size / align).times { |chunkOfs|
+        smp = chunk[chunkOfs * align, align].unpack(fmt)
+        smp.map! { |s| s - ((s & @sOfs).zero? ? 0 : @sOfs + @sOfs) }
+        yield baseOfs + chunkOfs, *smp unless smp.all? { |s| s.zero? }
+      }
+    }
+  end
+
+  private def parseHdr data
+    data = data.to_s
+    raise ArgumentError, "got #{data.size} bytes, not #{HdrSize}" \
+        unless data.size == HdrSize
+    fId, fSz, fFmt, c1Id, c1Sz, c1Fmt, nCh, hz, bRt, align, res, c2Id, c2Sz =
+        data.unpack('a4Va4a4VvvVVvva4V')
+    raise "got #{fId}, not RIFF/RIFX" unless fId =~ /\ARIF[FX]\z/
+    raise "got #{fFmt}, not WAVE" unless fFmt == 'WAVE'
+    raise "got #{c1Id}, not `fmt '" unless c1Id == 'fmt '
+    raise "#{c1Id} chunk #{c1Sz} bytes long, not 16" unless c1Sz == 16
+    raise "got #{c1Fmt} format, not 1 (PCM)" unless c1Fmt == 1
+    raise "got #{res} bit samples, not 8/16/32" unless [8, 16, 32].include? res
+    alignCalc = nCh * res / 8
+    raise "#{align} byte align, not #{alignCalc}" unless align == alignCalc
+    bRtCalc = hz * alignCalc
+    raise "#{bRt} byte rate, not #{bRtCalc}" unless bRt == bRtCalc
+    raise "got #{c2Id}, not `data'" unless c2Id == 'data'
+    @sFmt = res == 8 ? 'c' : res == 16 ? (fId == 'RIFF' ? 'v' : 'n') : (fId == 'RIFF' ? 'V' : 'N')
+    @sOfs = res == 8 ? 0 : res == 16 ? 2**15 : 2**31
+    @nCh, @hz, @res = nCh, hz, res
+  end
+
+  private def readHdr; @io.sysseek(0); @io.sysread(HdrSize) end
+end
+
+# {{{1 Manch
+class Manch
+  def initialize file, tick; @src, @tick = Wav.new(file), tick end
+
+  def bits
+    @src.each { |ofs, *vals|
+      # p [ofs, vals]
+      yield ofs, vals.sum > 0 ? '1' : '0'
+    }
+  end
+
+  def demod
+    seqs { |ofs, seq|
+      # p [ofs, seq]
+      seq.scan(/(?:01|10)+/) { |biph|
+        yield ofs + $`.size, biph.gsub(/(01)|10/) { $1 ? 0 : 1 }
+      }
+    }
+  end
+
+  def seqs
+    seq, from, to = nil, nil, nil
+
+    ticks { |ofs, bit|
+      # p ['seqs', ofs, bit] # if ofs.between? 900000, 2373000
+      if to
+        if ofs < to + @tick * 2
+          # Sequence continues
+          seq << bit
+          to = ofs
+          next
+        end
+
+        # End of sequence
+        yield from, seq
+      end
+
+      # New sequence
+      seq, from, to = bit.dup, ofs, ofs
+    }
+
+    yield from, seq if to
+  end
+
+  def ticks &block
+    bit, from, to = nil, nil, nil
+
+    bits { |ofs, new|
+      # p [ofs, new, bit, from, to] if ofs.between? 900000, 2373000
+      if new != bit || ofs > to
+        # End of sequence
+        tickSeq bit, from, to, &block if to
+        # New sequence
+        bit, from = new, ofs
+      end
+
+      to = ofs.next
+    }
+
+    tickSeq bit, from, to, &block if to
+  end
+
+  private def tickSeq bit, from, to
+    len = to - from
+    # p ['tickSeq', bit, from, len] if from.between? 900000, 2373000
+    (len.to_f / @tick).round.times { |i| yield from + i * @tick, bit }
+  end
+end
+
+def findOverlap s1, s2
+  s1, s2 = s2, s1 if s1.size < s2.size
+  # p [s1, s2]
+  best = ''
+  (0...s1.size).each { |s1pos|
+    s1rot = s1[s1pos..-1] << s1[0...s1pos]
+    from = 0
+    # p [s1rot, s2, best]
+    while from < s2.size - best.size
+      (from...s2.size).each { |idx|
+        # p [from, idx, s1rot[from..idx], s2[from..idx], best]
+        if s2[idx] != s1rot[idx]
+          from = idx.next
+          break
+        end
+        if (idx - from).next > best.size
+          best = s2[from..idx]
+        end
+      }
+    end
+  }
+  best
+end
+
+# {{{1 ItempMsg
+class ItempMsg < Struct.new :seq, :ctl, :src, :cmd, :nop, :ofs
+  CTL_RC = 16
+  CTL_WS = 32
+  NOP = 8
+  RC_ADJUST = 0
+  RC_COMFORT = 2
+  RC_SETBACK = 3
+  WINDOW_SHUT = 0
+  WINDOW_OPEN = 1
+
+  def self.fromBytes b
+    raise ArgumentError, "expect 7 bytes, got #{b.size}" if b.size != 7
+    new *b[0, 2], b[2] << 16 | b[3] << 8 | b[4], b[5] & 7, b[5] >> 3, b[6]
+  end
+
+  def self.fromOp op, src
+    ctl, cmd, ofs = case op
+        when /\AADJUST/
+          [CTL_RC, RC_ADJUST, (Float($') * 2).round % 256]
+        when 'COMFORT' then [CTL_RC, RC_COMFORT, 0]
+        when 'SETBACK' then [CTL_RC, RC_SETBACK, 0]
+        when 'WINDOW-OPEN' then [CTL_WS, WINDOW_OPEN, 0]
+        when 'WINDOW-SHUT' then [CTL_WS, WINDOW_SHUT, 0]
+        else raise ArgumentError, "#{op}: unknown operation"
+        end
+    new 0, ctl, src, cmd, NOP, ofs
+  end
+
+  def op
+    return "WINDOW-#{cmd == WINDOW_SHUT ? 'SHUT' : 'OPEN'}" if ctl == 32
+    case cmd
+    when 0 then 'ADJUST%+.1f' % ((ofs < 128 ? ofs : (ofs - 256)) / 2.0)
+    when 2 then 'COMFORT'
+    when 3 then 'SETBACK'
+    else '?'
+    end
+  end
+
+  def to_s
+    format '%06x:%02x[%02x] %u:%02x (%02x) %s',
+        src & 0xffffff, ctl, seq, cmd & 7, nop & 63, ofs, op
+  end
+
+  def toBytes
+    [seq, ctl, src >> 16 & 255, src >> 8 & 255, src & 255, cmd & 7 | nop << 3, ofs]
+  end
+end
+
+# {{{1 ItempRf
+module ItempRf
+  Sync = 0x7e
+
+  def self.crc16 data
+    data.inject(0x1d0f) { |crc, b|
+      crc ^= b << 8
+      8.times { crc = ((crc << 1) & 0xffff) ^ ((crc & 0x8000).zero? ? 0 : 0x1021) }
+      crc
+    } ^ 0x1643
+  end
+
+  def self.deFrame bytes
+    raise ArgumentError, "expect over 3 bytes, got #{bytes.size} bytes" \
+        unless bytes.size > 3
+    raise ArgumentError, 'expect %02x sync byte, got %02x' % [Sync, bytes[0]] \
+        if bytes[0] != Sync
+    crc = bytes[-2] << 8 | bytes[-1]
+    crc_ok = crc16 bytes[1...-2]
+    raise ArgumentError, 'expect %04x CRC, got %04x' % [crc_ok, crc] \
+        if crc != crc_ok
+    bytes[1...-2].map { |b| stib b }
+  end
+
+  def self.deSerialise bits
+    raise ArgumentError, "expect only whole bytes, got #{bits.size} bits" \
+        unless (bits.size % 8).zero?
+    [bits].pack('B*').bytes
+  end
+
+  def self.deStream rfBits
+    rfBits.gsub /(?<!\A01)111110/, '11111'
+  end
+
+  def self.frame data
+    data = [Sync, *data].map { |b| stib b }
+    crc = crc16 data[1..-1]
+    data.push crc >> 8, crc & 0xff
+  end
+
+  def self.recv rfBits
+    deFrame(deSerialise(deStream(rfBits)))
+  end
+
+  def self.send data
+    stream(serialise(frame(data)))
+  end
+
+  def self.serialise bytes
+    bytes.map { |b| b.chr }.join.unpack('B*').first
+  end
+
+  def self.stib byte
+    byte = (byte & 0xf0) >> 4 | (byte & 0x0f) << 4
+    byte = (byte & 0xcc) >> 2 | (byte & 0x33) << 2
+    byte = (byte & 0xaa) >> 1 | (byte & 0x55) << 1
+  end
+
+  def self.stream bits
+    bits.gsub(/(?<!\A0|\A01)11111/, '111110')
+  end
+end
+# }}}1
+
+def parseWav fn
+  sync = '%08b' % ItempRf::Sync
+  puts "\n\nfile #{fn}\n"
+  File.open(fn) { |f|
+    Manch.new(f, 10).demod { |ofs, seq|
+      # A proper command is a 80-bit message repeated 300+ times.
+      next if seq.size < 4000
+      printf "\n%u bits @%u  ", seq.size, ofs
+      # Extract the repeated 80-bit sequence.  Since only the sync octet is
+      # allowed six 1s in a row, there may be one 0 bit stuffed per five 1s.
+      # Hence the logical 80-bit sequence can be between 80 and 94 air bits.
+      next printf "no pattern\n" if seq !~ /(#{sync}.{72,86})\1{200,}/
+      # Leading, repeated, trailing sequences.
+      raw = [$`, $1, $']
+      cooked = raw.map { |s| ItempRf.deStream s }
+      times = (seq.size - raw[0].size - raw[2].size) / raw[1].size
+      sizes = raw.zip(cooked).map \
+        { |r, c| r.size == c.size ? '%u' % r.size : '%u→%u' % [r.size, c.size] }
+      sizes.insert 1, times
+      printf "lead+pattern+trail %s + %u*%s + %s bits\n", *sizes
+      cooked.each { |bits|
+        octets = bits.scan /.{1,8}/
+        hex = octets.map { |o| '%02x' % (o + '0'*(8-o.size)).to_i(2) }
+        printf "%-92s  %s\n", octets.join(' '), hex.join(' ')
+      }
+      begin
+        bytes = ItempRf.deFrame(ItempRf.deSerialise(cooked[1]))
+        puts ItempMsg.fromBytes(bytes)
+      rescue ArgumentError
+        puts "#$! (#{$!.class})"
+      end
+      $stdout.flush
+    }
+  }
+end
+
+def outputMsg msg
+  $stderr.puts msg
+  rf = ItempRf.send msg.toBytes
+  json = format "\"bits\":%u,\"data\":\"%s\"",
+      rf.size, [rf].pack('B*').bytes.map { |b| '%02x' % b }.join
+  $stderr.puts json
+  puts json
+end
+
+begin
+  case ARGV.first
+  when 'build-msg'
+    msg = ItempMsg.new \
+        *ARGV[1, 2].map { |s| Integer(s) % 256 },
+        ARGV[3].hex,
+        *ARGV[4, 3].map { |s| Integer(s) % 256 }
+    outputMsg msg
+
+  when 'gen-msg'
+    msg = ItempMsg.fromOp ARGV[1], ARGV[2].hex
+    outputMsg msg
+
+  when 'parse-wav'
+    ARGV[1..-1].each { |fn| parseWav fn }
+  end
+rescue Errno::EPIPE
+end
