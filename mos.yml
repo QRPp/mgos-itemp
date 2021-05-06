@@ -1,0 +1,16 @@
+author: QRPp <awesome.walrus+github@gmail.com>
+description: Mongoose OS RF control of Terrier i-temp PRCs
+name: itemp
+type: lib
+version: 1.0
+manifest_version: 2020-08-02
+
+includes: [include]
+sources: [src]
+
+config_schema:
+  - ["itemp.auto_setup", "b", true, {"title": "Configure CC1101 RF module upon boot"}]
+
+libs:
+  - origin: https://github.com/QRPp/mgos-cc1101
+  - origin: https://github.com/QRPp/mgos-helpers
