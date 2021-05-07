@@ -1,5 +1,5 @@
 author: QRPp <awesome.walrus+github@gmail.com>
-description: Mongoose OS RF control of Terrier i-temp PRCs
+description: Mongoose OS RF control of Terrier i-temp i30/i35 PRCs
 name: itemp
 type: lib
 version: 1.0
