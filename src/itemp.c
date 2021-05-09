@@ -91,7 +91,8 @@ static size_t cmd_bitstuff(const struct itmsg *msg, uint8_t *buf) {
 }
 
 #define ITMSG_COPIES (300 - 1)  // Repeat enough: the receiver isn't always on.
-bool mgos_itemp_send_cmd(uint32_t src, enum itemp_cmd cmd, int8_t arg) {
+bool mgos_itemp_send_cmd(uint32_t src, enum itemp_cmd cmd, int8_t arg,
+                         mgos_cb_t cb, void *opaque) {
   enum itctl ctl;
   enum itsig sig;
   /* clang-format off */
@@ -129,9 +130,16 @@ bool mgos_itemp_send_cmd(uint32_t src, enum itemp_cmd cmd, int8_t arg) {
         sz, rf[0], rf[1], rf[2], rf[3], rf[4], rf[5], rf[6], rf[7], rf[8],
         rf[9], rf[10], rf[11]);
 
+  struct mgos_cc1101_tx_req req = {
+    data : rf,
+    len : sz,
+    copies : ITMSG_COPIES,
+    free_data : true,
+    cb : cb,
+    opaque : opaque
+  };
   bool ok = false;
-  ok = TRY_GT(mgos_cc1101_tx, mgos_cc1101_get_global_locked(), sz, rf,
-              ITMSG_COPIES);
+  ok = TRY_GT(mgos_cc1101_tx, mgos_cc1101_get_global_locked(), &req);
 err:
   if (!ok) free(rf);
   mgos_cc1101_put_global_locked();
@@ -160,17 +168,6 @@ bool mgos_itemp_setup_rf(bool reset) {
 err:
   mgos_cc1101_put_global_locked();
   return ok;
-}
-
-bool mgos_itemp_status(struct itemp_status *st) {
-  struct mgos_cc1101 *cc1101 = mgos_cc1101_get_global_locked();
-  if (!cc1101) return false;
-  const struct mgos_cc1101_tx_stats *txst = mgos_cc1101_tx_stats(cc1101);
-  mgos_cc1101_put_global_locked();
-  if (!txst) return false;
-  st->busy = txst->busy;
-  st->ok = txst->ok;
-  return true;
 }
 
 bool mgos_itemp_init() {

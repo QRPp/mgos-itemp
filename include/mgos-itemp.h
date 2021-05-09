@@ -1,5 +1,7 @@
 #pragma once
 
+#include <mgos_system.h>
+
 #include <stdbool.h>
 #include <stdint.h>
 
@@ -19,9 +21,9 @@ struct itemp_status {
 extern "C" {
 #endif
 
-bool mgos_itemp_send_cmd(uint32_t src, enum itemp_cmd cmd, int8_t arg);
+bool mgos_itemp_send_cmd(uint32_t src, enum itemp_cmd cmd, int8_t arg,
+                         mgos_cb_t cb, void *opaque);
 bool mgos_itemp_setup_rf(bool reset);
-bool mgos_itemp_status(struct itemp_status *st);
 
 #ifdef __cplusplus
 }
