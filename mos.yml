@@ -12,5 +12,5 @@ config_schema:
   - ["itemp.auto_setup", "b", true, {"title": "Configure CC1101 RF module upon boot"}]
 
 libs:
-  - origin: https://github.com/QRPp/mgos-cc1101
-  - origin: https://github.com/QRPp/mgos-helpers
+  - {origin: https://github.com/QRPp/mgos-cc1101, name: cc1101}
+  - {origin: https://github.com/QRPp/mgos-helpers, name: helpers}
