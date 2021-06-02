@@ -92,7 +92,7 @@ static size_t cmd_bitstuff(const struct itmsg *msg, uint8_t *buf) {
 
 #define ITMSG_COPIES (300 - 1)  // Repeat enough: the receiver isn't always on.
 bool mgos_itemp_send_cmd(uint32_t src, enum itemp_cmd cmd, int8_t arg,
-                         mgos_cb_t cb, void *opaque) {
+                         uint32_t quiet_us, mgos_cb_t cb, void *opaque) {
   enum itctl ctl;
   enum itsig sig;
   /* clang-format off */
@@ -135,6 +135,7 @@ bool mgos_itemp_send_cmd(uint32_t src, enum itemp_cmd cmd, int8_t arg,
     len : sz,
     copies : ITMSG_COPIES,
     free_data : true,
+    quiet_us : quiet_us,
     cb : cb,
     opaque : opaque
   };
