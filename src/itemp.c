@@ -179,6 +179,7 @@ bool mgos_itemp_setup_rf(bool reset) {
   struct mgos_cc1101 *cc1101 = mgos_cc1101_get_global_locked();
   if (!cc1101) return false;
   if (reset) TRY_GT(mgos_cc1101_reset, cc1101);
+  TRY_GT(mgos_cc1101_write_reg, cc1101, CC1101_PATABLE, 192);
   ok = TRY_GT(mgos_cc1101_mod_regs, cc1101, CC1101_PKTCTRL0, CC1101_DEVIATN,
               mgos_itemp_setup_rf_cb, NULL);
 err:
