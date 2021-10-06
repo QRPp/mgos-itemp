@@ -90,25 +90,35 @@ static size_t cmd_bitstuff(const struct itmsg *msg, uint8_t *buf) {
   return (to - buf) * 8 + acc_sz;
 }
 
+static const char *cmd_str(enum itemp_cmd cmd) {
+  switch (cmd) {  // clang-format off
+    case ITCMD_ADJUST: return "ADJUST";
+    case ITCMD_COMFORT: return "COMFORT";
+    case ITCMD_SETBACK: return "SETBACK";
+    case ITCMD_WINDOW_OPEN: return "WINDOW_OPEN";
+    case ITCMD_WINDOW_SHUT: return "WINDOW_SHUT";
+    default: return "<invalid>";
+  };  // clang-format on
+}
+
 #define ITMSG_COPIES (300 - 1)  // Repeat enough: the receiver isn't always on.
 bool mgos_itemp_send_cmd(uint32_t src, enum itemp_cmd cmd, int8_t arg,
                          uint32_t quiet_us, mgos_cb_t cb, void *opaque) {
+  /* Code up the command signal. */
   enum itctl ctl;
   enum itsig sig;
-  /* clang-format off */
-  switch (cmd) {  // Code up the command signal.
+  switch (cmd) {  // clang-format off
     case ITCMD_ADJUST: ctl = ITCTL_RC; sig = ITSIG_RC_ADJUST; break;
     case ITCMD_COMFORT: ctl = ITCTL_RC; sig = ITSIG_RC_COMFORT; break;
     case ITCMD_SETBACK: ctl = ITCTL_RC; sig = ITSIG_RC_SETBACK; break;
     case ITCMD_WINDOW_OPEN: ctl = ITCTL_WS; sig = ITSIG_WS_OPEN; break;
     case ITCMD_WINDOW_SHUT: ctl = ITCTL_WS; sig = ITSIG_WS_SHUT; break;
     default: FNERR_RETF("cmd %d unknown", cmd);
-  };
-  /* clang-format on */
+  };  // clang-format on
 
+  /* Build the message. */
   static uint8_t itmsg_seq = 0;
   struct itmsg m = {
-    // Build the message.
     syn : ITSYN,
     seq : itmsg_seq++,
     ctl : ctl,
@@ -118,7 +128,7 @@ bool mgos_itemp_send_cmd(uint32_t src, enum itemp_cmd cmd, int8_t arg,
     arg : arg
   };
   uint8_t *bits = &m.seq;  // Revert bit order to LSB first, a la RS-232.
-  while (bits < m.crc8) cmd_stib(bits++);  // Skip the syn byte, its symmetric.
+  while (bits < m.crc8) cmd_stib(bits++);  // Skip the syn byte, it's symmetric.
   m.crc = htons(cmd_crc16(&m.seq, m.crc8 - &m.seq));  // Omit the syn byte too.
 
   /* See cmd_bitstuff() above: one extra bit possible per source five. */
@@ -126,9 +136,13 @@ bool mgos_itemp_send_cmd(uint32_t src, enum itemp_cmd cmd, int8_t arg,
   if (!rf) FNERR_RETF("%s(%u): failed", "malloc", ITMSG_RF_BUFSZ);
   size_t sz = cmd_bitstuff(&m, rf);  // Bit stuffing.
 
-  FNLOG(LL_DEBUG, "rf(%zu): %02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x",
-        sz, rf[0], rf[1], rf[2], rf[3], rf[4], rf[5], rf[6], rf[7], rf[8],
-        rf[9], rf[10], rf[11]);
+  if (mgos_sys_config_get_itemp_debug())
+    FNLOG(LL_INFO, "%06X(%u us) → %s(%d): rf(%zu) %08x%08x%04x%02x%02x", src,
+          quiet_us, cmd_str(cmd), arg, sz,
+          (rf[0] << 24) | (rf[1] << 16) | (rf[2] << 8) | rf[3],
+          (rf[4] << 24) | (rf[5] << 16) | (rf[6] << 8) | rf[7],
+          (rf[8] << 8) | rf[9], rf[10] & 255 << (sz > 88 ? 0 : 88 - sz),
+          rf[11] & 255 << (sz > 96 ? 0 : 96 - sz));
 
   struct mgos_cc1101_tx_req req = {
     data : rf,
